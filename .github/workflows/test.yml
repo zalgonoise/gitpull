@@ -1,0 +1,24 @@
+# The tests and the coverage minimum on every push and pull request: the same
+# make targets as locally (the tests use local repositories and a fake GitHub
+# API, so they need nothing beyond Go).
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt, go vet and the tests
+        run: make test
+      - name: coverage (minimum 60%)
+        run: make cover
