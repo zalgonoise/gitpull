@@ -1,0 +1,8 @@
+# private configuration: config files, credentials and the audit denylist
+local/
+# outputs: coverage and the built binary
+tmp/
+# release builds (make release)
+bin/
+.idea/
+.DS_Store
