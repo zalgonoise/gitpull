@@ -7,18 +7,18 @@ repositories at a time. Written in Go on [go-git](https://github.com/go-git/go-g
 ```sh
 gitpull list  -org acme -i ~/.git-credentials          # what the organization has
 gitpull clone -config acme.json -shallow -parallel 8    # clone it, skipping what is already cloned
-gitpull pull  -config acme.json -parallel 8             # catch up later
+gitpull pull  -config acme.json -parallel 8             # catch up later, cloning what is missing
 ```
 
 ## What you can use it for
 
 - **Get an organization onto a new machine.** `gitpull list` reads every repository of an organization from the GitHub
   API, and `gitpull clone` clones them in parallel, shallow if you only need the latest code.
-- **Keep many clones up to date.** `gitpull pull` fast-forwards every repository from its `origin`. Repositories that
-  are already up to date are not errors.
+- **Keep many clones up to date.** `gitpull pull` fast-forwards every repository from its `origin`, and clones the ones
+  you don't have yet. Repositories that are already up to date are not errors.
 - **Keep the repositories you work with in one file.** A JSON config holds the organization, the folder, the
   repositories, the credentials file and the number of workers. Flags override it for a single run. Add repositories
-  to it and run `clone` again: the ones already cloned are skipped.
+  to it and run `pull`: the new ones are cloned and the others updated.
 - **Script around it.** `list` prints one name per line on stdout, and the logs are JSON on stderr, so both pipe
   straight into `jq`, `paste` or your own scripts.
 
@@ -30,9 +30,9 @@ gitpull pull  -config acme.json -parallel 8             # catch up later
 - **`clone`** fetches every branch and tag, then checks out the default branch and its submodules (up to 10 levels
   deep). With `-shallow` it fetches only the latest commit of the default branch, without tags, and clones submodules
   the same way. A folder that already holds a git repository is skipped, and empty repositories clone fine.
-- **`pull`** opens `<dir>/<name>.git`, fetches from `origin` and fast-forwards the checked-out branch. It never
-  overwrites your work: a branch that has diverged from `origin`, or a folder with uncommitted changes, is reported as
-  an error and left as it is.
+- **`pull`** opens `<dir>/<name>.git`, fetches from `origin` and fast-forwards the checked-out branch. A repository
+  that isn't there yet is cloned instead, like `clone` would. It never overwrites your work: a branch that has diverged
+  from `origin`, or a folder with uncommitted changes, is reported as an error and left as it is.
 - **`-parallel N`** starts N workers that share the list, each repository going to exactly one of them. A failure does
   not stop the others: it is logged as it happens, and the run ends with a summary such as `2 of 120 repositories
   failed` and exit status 1.
@@ -96,7 +96,7 @@ gitpull <command> [flags]
 | Command | What it does |
 |---|---|
 | `clone` | Clone repositories into a folder, skipping the ones already cloned |
-| `pull` | Fast-forward cloned repositories from their `origin` |
+| `pull` | Fast-forward cloned repositories from their `origin`, cloning the missing ones |
 | `list` | Print the names of a GitHub organization's repositories |
 | `version` | Print the version |
 | `help` | Print the commands |
@@ -122,8 +122,12 @@ holds anything else is reported as an error and left untouched.
 
 ### `pull`
 
-Fast-forwards each repository in `<dir>/<name>.git` from `origin`. It takes the same flags as `clone`, except
-`-shallow`: a shallow clone stays shallow and only fetches the new commits.
+Fast-forwards each repository in `<dir>/<name>.git` from `origin`. A repository whose folder is missing, or empty, is
+cloned instead, so a list that grew since the last `clone` needs no extra step. A folder that holds something other
+than a git repository is still reported as an error and left untouched.
+
+It takes the same flags as `clone`. `-shallow` only decides how the missing repositories are cloned: existing
+clones keep their history as it is, and a shallow clone stays shallow, only fetching the new commits.
 
 ### `list`
 
@@ -219,6 +223,7 @@ Each repository logs one of these messages, with its `uri`:
 | INFO | `repository already cloned` | `clone` found a repository in the folder and skipped it |
 | INFO | `pulled from remote` | `pull` brought new commits (with `branch` and `commit`) |
 | INFO | `repository already up-to-date` | `pull` found nothing new |
+| INFO | `repository not cloned yet` | `pull` found no repository in the folder and clones it (with `path`) |
 | ERROR | `repository failed` | The repository failed (with `error`); the others go on |
 
 A run with failures ends with `ERROR` lines holding the summary, such as `1 of 2 repositories failed`. When the
@@ -239,12 +244,13 @@ gitpull clone -org acme -i ~/.git-credentials -shallow -parallel 8 \
   -repos "$(gitpull list -org acme -i ~/.git-credentials -skip-archived | paste -sd, -)"
 ```
 
-**Refresh the repository list of a config file**, keeping its other keys, then clone the new ones:
+**Refresh the repository list of a config file**, keeping its other keys, then pull: the new repositories are cloned
+and the others updated:
 
 ```sh
 jq --argjson repos "$(gitpull list -config acme.json -skip-archived | jq -R . | jq -s .)" '.repos = $repos' \
   acme.json > acme.json.new && mv acme.json.new acme.json
-gitpull clone -config acme.json
+gitpull pull -config acme.json
 ```
 
 **Pull only a few repositories from a config file:**

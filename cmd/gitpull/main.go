@@ -27,7 +27,7 @@ Usage:
 
 Commands:
   clone     clone repositories into a folder, skipping the ones already cloned
-  pull      fast-forward cloned repositories from their origin
+  pull      fast-forward cloned repositories from their origin, cloning the missing ones
   list      print the names of a GitHub organization's repositories
   version   print the version
   help      print this help
@@ -137,12 +137,7 @@ func ExecClone(ctx context.Context, logger *slog.Logger, args []string) (int, er
 		return 1, err
 	}
 
-	cloneFn := git.Clone
-	if *shallow {
-		cloneFn = git.ShallowClone
-	}
-
-	if err := git.MultiRepo(ctx, *org, expandHome(*dir), strings.Split(*repos, ","), auth, *parallel, cloneFn, logger); err != nil {
+	if err := git.MultiRepo(ctx, *org, expandHome(*dir), strings.Split(*repos, ","), auth, *parallel, cloneFunc(*shallow), logger); err != nil {
 		logger.ErrorContext(ctx, "failed to clone repositories", slog.String("error", err.Error()))
 
 		return 1, err
@@ -158,6 +153,7 @@ func ExecPull(ctx context.Context, logger *slog.Logger, args []string) (int, err
 	org := fs.String("org", "", "GitHub organization or user that owns the repositories")
 	dir := fs.String("dir", ".", "folder the repositories were cloned into, as <dir>/<name>.git")
 	repos := fs.String("repos", "", "comma-separated repository names")
+	shallow := fs.Bool("shallow", false, "clone missing repositories with only the latest commit of the default branch, without tags")
 	parallel := fs.Int("parallel", 1, "number of repositories to pull at the same time")
 	user := fs.String("user", "", "GitHub user, together with -token")
 	token := fs.String("token", "", "GitHub token, together with -user; prefer -i, which keeps it out of your shell history")
@@ -182,7 +178,9 @@ func ExecPull(ctx context.Context, logger *slog.Logger, args []string) (int, err
 		return 1, err
 	}
 
-	if err := git.MultiRepo(ctx, *org, expandHome(*dir), strings.Split(*repos, ","), auth, *parallel, git.Pull, logger); err != nil {
+	pullFn := git.PullOrClone(cloneFunc(*shallow))
+
+	if err := git.MultiRepo(ctx, *org, expandHome(*dir), strings.Split(*repos, ","), auth, *parallel, pullFn, logger); err != nil {
 		logger.ErrorContext(ctx, "failed to pull repositories", slog.String("error", err.Error()))
 
 		return 1, err
@@ -240,6 +238,15 @@ func ExecList(ctx context.Context, logger *slog.Logger, args []string) (int, err
 	}
 
 	return 0, nil
+}
+
+// cloneFunc returns the clone that -shallow asks for.
+func cloneFunc(shallow bool) git.GitFunc {
+	if shallow {
+		return git.ShallowClone
+	}
+
+	return git.Clone
 }
 
 // identityFlag registers -i and -identity as two names for the same flag.

@@ -149,6 +149,24 @@ func Pull(ctx context.Context, uri, path string, auth *Auth, logger *slog.Logger
 	return nil
 }
 
+// PullOrClone returns a GitFunc that pulls a repository like Pull, and clones it with clone when its path doesn't hold
+// a git repository yet, e.g. a repository added to the list since the last clone. A path that holds something else is
+// still an error, from clone, and is left untouched.
+func PullOrClone(clone GitFunc) GitFunc {
+	return func(ctx context.Context, uri, path string, auth *Auth, logger *slog.Logger) error {
+		err := Pull(ctx, uri, path, auth, logger)
+		if !errors.Is(err, git.ErrRepositoryNotExists) {
+			return err
+		}
+
+		logger.InfoContext(ctx, "repository not cloned yet",
+			slog.String("uri", uri),
+			slog.String("path", path))
+
+		return clone(ctx, uri, path, auth, logger)
+	}
+}
+
 // headHash returns the commit HEAD points to, or the zero hash for a repository without commits.
 func headHash(repo *git.Repository) (plumbing.Hash, error) {
 	ref, err := repo.Head()

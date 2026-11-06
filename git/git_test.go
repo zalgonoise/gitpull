@@ -224,3 +224,81 @@ func TestPullNotCloned(t *testing.T) {
 	require.ErrorIs(t, Pull(t.Context(), "file:///nowhere", t.TempDir(), nil, slog.New(slog.DiscardHandler)),
 		git.ErrRepositoryNotExists)
 }
+
+func TestPullOrClone(t *testing.T) {
+	for _, testcase := range []struct {
+		name         string
+		clone        GitFunc
+		prepare      func(t *testing.T, uri, path string)
+		wants        []string
+		wantsShallow int
+	}{
+		{
+			name:  "Missing",
+			clone: Clone,
+			wants: []string{"repository not cloned yet", "cloning repository", "cloned remote"},
+		},
+		{
+			name:         "MissingShallow",
+			clone:        ShallowClone,
+			wants:        []string{"repository not cloned yet", "cloning repository", "cloned remote"},
+			wantsShallow: 1,
+		},
+		{
+			name:  "EmptyFolder",
+			clone: Clone,
+			prepare: func(t *testing.T, _, path string) {
+				require.NoError(t, os.MkdirAll(path, 0o755))
+			},
+			wants: []string{"repository not cloned yet", "cloning repository", "cloned remote"},
+		},
+		{
+			name:  "AlreadyCloned",
+			clone: Clone,
+			prepare: func(t *testing.T, uri, path string) {
+				require.NoError(t, Clone(t.Context(), uri, path, nil, slog.New(slog.DiscardHandler)))
+			},
+			wants: []string{"repository already up-to-date"},
+		},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			uri, source := newSourceRepo(t, 3)
+			path := filepath.Join(t.TempDir(), "repo.git")
+			logger, messages := logMessages(t)
+
+			if testcase.prepare != nil {
+				testcase.prepare(t, uri, path)
+			}
+
+			require.NoError(t, PullOrClone(testcase.clone)(t.Context(), uri, path, nil, logger))
+			require.Equal(t, testcase.wants, messages())
+
+			sourceHead, err := source.Head()
+			require.NoError(t, err)
+
+			repo, err := git.PlainOpen(path)
+			require.NoError(t, err)
+
+			head, err := repo.Head()
+			require.NoError(t, err)
+			require.Equal(t, sourceHead.Hash(), head.Hash())
+
+			shallow, err := repo.Storer.Shallow()
+			require.NoError(t, err)
+			require.Len(t, shallow, testcase.wantsShallow)
+		})
+	}
+}
+
+func TestPullOrCloneLeavesOtherFoldersAlone(t *testing.T) {
+	uri, _ := newSourceRepo(t, 2)
+	path := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(path, "notes.txt"), []byte("mine"), 0o600))
+
+	err := PullOrClone(Clone)(t.Context(), uri, path, nil, slog.New(slog.DiscardHandler))
+	require.ErrorIs(t, err, git.ErrTargetDirNotEmpty)
+
+	content, err := os.ReadFile(filepath.Join(path, "notes.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "mine", string(content))
+}
