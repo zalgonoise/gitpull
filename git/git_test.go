@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/require"
 )
@@ -301,4 +305,186 @@ func TestPullOrCloneLeavesOtherFoldersAlone(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(path, "notes.txt"))
 	require.NoError(t, err)
 	require.Equal(t, "mine", string(content))
+}
+
+// caseInsensitive reports whether the filesystem holding dir ignores case in file names, like macOS and Windows do
+// by default.
+func caseInsensitive(t *testing.T, dir string) bool {
+	t.Helper()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "probe"), nil, 0o600))
+	_, err := os.Stat(filepath.Join(dir, "PROBE"))
+
+	return err == nil
+}
+
+func countTags(t *testing.T, repo *git.Repository) int {
+	t.Helper()
+
+	tags, err := repo.Tags()
+	require.NoError(t, err)
+
+	var count int
+	require.NoError(t, tags.ForEach(func(*plumbing.Reference) error {
+		count++
+
+		return nil
+	}))
+
+	return count
+}
+
+func TestCloneTagsDifferingOnlyByCase(t *testing.T) {
+	// v1.0.0 is packed, as git leaves it after a clone or gc, so V1.0.0 can be created next to it even on a
+	// case-insensitive filesystem.
+	uri, source := newSourceRepo(t, 1)
+	require.NoError(t, source.Storer.(interface{ PackRefs() error }).PackRefs())
+
+	_, err := source.CreateTag("V1.0.0", addCommit(t, source, "second"), nil)
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "repo")
+	logger, messages := logMessages(t)
+
+	require.NoError(t, Clone(t.Context(), uri, path, nil, logger))
+
+	repo, err := git.PlainOpen(path)
+	require.NoError(t, err)
+
+	if caseInsensitive(t, t.TempDir()) {
+		require.Equal(t, []string{"cloning repository", "some tags were not stored", "cloned remote"}, messages())
+		require.Equal(t, 1, countTags(t, repo))
+
+		return
+	}
+
+	require.Equal(t, []string{"cloning repository", "cloned remote"}, messages())
+	require.Equal(t, 2, countTags(t, repo))
+}
+
+// newSuperproject creates a repository whose only commit holds the given submodules, path to URL, each pinned to
+// commit, and returns its file:// URL.
+func newSuperproject(t *testing.T, commit plumbing.Hash, submodules map[string]string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	repo, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+
+	store := func(o interface {
+		Encode(plumbing.EncodedObject) error
+	}) plumbing.Hash {
+		obj := repo.Storer.NewEncodedObject()
+		require.NoError(t, o.Encode(obj))
+
+		hash, err := repo.Storer.SetEncodedObject(obj)
+		require.NoError(t, err)
+
+		return hash
+	}
+
+	var gitmodules strings.Builder
+	entries := make([]object.TreeEntry, 0, len(submodules)+1)
+
+	for _, name := range slices.Sorted(maps.Keys(submodules)) {
+		fmt.Fprintf(&gitmodules, "[submodule %q]\n\tpath = %s\n\turl = %s\n", name, name, submodules[name])
+		entries = append(entries, object.TreeEntry{Name: name, Mode: filemode.Submodule, Hash: commit})
+	}
+
+	blob := repo.Storer.NewEncodedObject()
+	blob.SetType(plumbing.BlobObject)
+
+	writer, err := blob.Writer()
+	require.NoError(t, err)
+
+	_, err = writer.Write([]byte(gitmodules.String()))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	blobHash, err := repo.Storer.SetEncodedObject(blob)
+	require.NoError(t, err)
+
+	// Tree entries are sorted by name, and ".gitmodules" sorts before any letter.
+	entries = append([]object.TreeEntry{{Name: ".gitmodules", Mode: filemode.Regular, Hash: blobHash}}, entries...)
+
+	signature := object.Signature{Name: "test", Email: "test@example.com", When: time.Now()}
+	commitHash := store(&object.Commit{
+		Author:    signature,
+		Committer: signature,
+		Message:   "add submodules",
+		TreeHash:  store(&object.Tree{Entries: entries}),
+	})
+
+	head, err := repo.Storer.Reference(plumbing.HEAD)
+	require.NoError(t, err)
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(head.Target(), commitHash)))
+
+	return "file://" + dir
+}
+
+func TestCloneSubmodules(t *testing.T) {
+	subURI, sub := newSourceRepo(t, 2)
+
+	subHead, err := sub.Head()
+	require.NoError(t, err)
+
+	uri := newSuperproject(t, subHead.Hash(), map[string]string{
+		"good":   subURI,
+		"broken": "file://" + filepath.Join(t.TempDir(), "missing"),
+	})
+
+	path := filepath.Join(t.TempDir(), "repo")
+	logger, messages := logMessages(t)
+
+	// The broken submodule is left out, and the repository and its other submodule are kept.
+	require.NoError(t, Clone(t.Context(), uri, path, nil, logger))
+	require.Equal(t, []string{"cloning repository", "submodule not cloned", "cloned remote"}, messages())
+
+	repo, err := git.PlainOpen(path)
+	require.NoError(t, err)
+
+	workTree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	good, err := workTree.Submodule("good")
+	require.NoError(t, err)
+
+	status, err := good.Status()
+	require.NoError(t, err)
+	require.Equal(t, subHead.Hash(), status.Current)
+}
+
+func TestSubmoduleURL(t *testing.T) {
+	const parent = "https://github.com/acme/app.git"
+
+	for _, testcase := range []struct {
+		name      string
+		parent    string
+		submodule string
+		wants     string
+	}{
+		{name: "GitHubSSH", parent: parent, submodule: "git@github.com:acme/lib.git", wants: "https://github.com/acme/lib.git"},
+		{name: "GitHubSSHURL", parent: parent, submodule: "ssh://git@github.com/acme/lib.git", wants: "https://github.com/acme/lib.git"},
+		{name: "GitHubHTTPS", parent: parent, submodule: "https://github.com/acme/lib.git", wants: "https://github.com/acme/lib.git"},
+		{name: "SiblingRepository", parent: parent, submodule: "../lib.git", wants: "https://github.com/acme/lib.git"},
+		{name: "OtherOrganization", parent: parent, submodule: "../../other/lib.git", wants: "https://github.com/other/lib.git"},
+		{name: "OtherHostSSH", parent: parent, submodule: "git@bitbucket.org:team/styles.git", wants: "git@bitbucket.org:team/styles.git"},
+		{name: "OtherHostHTTPS", parent: parent, submodule: "https://gitlab.com/team/lib.git", wants: "https://gitlab.com/team/lib.git"},
+		{name: "RelativeToLocalPath", parent: "/src/app", submodule: "../lib", wants: "../lib"},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			require.Equal(t, testcase.wants, submoduleURL(testcase.parent, testcase.submodule))
+		})
+	}
+}
+
+func TestSubmoduleAuth(t *testing.T) {
+	auth := &Auth{Username: "octocat", Token: "secret"}
+
+	require.Equal(t, auth, submoduleAuth("https://github.com/acme/lib.git", auth))
+	require.Nil(t, submoduleAuth("https://gitlab.com/acme/lib.git", auth))
+	require.Nil(t, submoduleAuth("https://github.com.evil.example/acme/lib.git", auth))
+	require.Nil(t, submoduleAuth("git@bitbucket.org:team/styles.git", auth))
+	require.Nil(t, submoduleAuth("file:///src/lib", auth))
 }

@@ -30,6 +30,13 @@ gitpull pull  -config acme.json -parallel 8             # catch up later, clonin
 - **`clone`** fetches every branch and tag, then checks out the default branch and its submodules (up to 10 levels
   deep). With `-shallow` it fetches only the latest commit of the default branch, without tags, and clones submodules
   the same way. A folder that already holds a git repository is skipped, and empty repositories clone fine.
+- **Tags and submodules never cost you the repository.** They are fetched after the clone, and one that fails is
+  logged as a warning and left out, while the repository is kept:
+  - Submodules on GitHub are cloned over HTTPS with your credentials, even when `.gitmodules` gives an SSH address
+    (`git@github.com:acme/lib.git`) or a relative one (`../lib.git`). Submodules on other hosts are cloned from the
+    address `.gitmodules` gives, without your credentials, which are only ever sent to `github.com`.
+  - On a case-insensitive filesystem (macOS, Windows), two tags whose names differ only by case, such as `v1.0.0` and
+    `V1.0.0`, can't be stored side by side: the first is kept and the other left out.
 - **`pull`** opens `<dir>/<name>.git`, fetches from `origin` and fast-forwards the checked-out branch. A repository
   that isn't there yet is cloned instead, like `clone` would. It never overwrites your work: a branch that has diverged
   from `origin`, or a folder with uncommitted changes, is reported as an error and left as it is.
@@ -40,8 +47,8 @@ gitpull pull  -config acme.json -parallel 8             # catch up later, clonin
   repositories not started yet are skipped, so the next run starts from a consistent state.
 - **`list`** calls the GitHub REST API (`GET /orgs/{org}/repos`), 100 repositories per page, until it reaches the last
   page.
-- **Credentials** go to `clone` and `pull` as HTTP basic auth (user and token) and to `list` as a bearer token. They
-  are never logged.
+- **Credentials** go to `clone` and `pull` as HTTP basic auth (user and token) and to `list` as a bearer token, only
+  ever to `github.com`. They are never logged.
 
 ## Install
 
@@ -49,15 +56,24 @@ gitpull pull  -config acme.json -parallel 8             # catch up later, clonin
 go install github.com/zalgonoise/gitpull/cmd/gitpull@latest
 ```
 
-This needs Go 1.27.1 or newer. From a clone of this repository, `make build` writes the binary to `tmp/bin/gitpull`,
-and `make release` builds it for macOS and Linux (see [Development](#development)). `gitpull version` prints the
+This needs Go 1.27.1 or newer. Otherwise, each [release](https://github.com/zalgonoise/gitpull/releases) has binaries
+for macOS and Linux (amd64 and arm64), and a `SHA256SUMS` file to check them against:
+
+```sh
+V=v1.1.0 F=gitpull-$V-darwin-arm64
+curl -fsSLO "https://github.com/zalgonoise/gitpull/releases/download/$V/$F"
+curl -fsSL "https://github.com/zalgonoise/gitpull/releases/download/$V/SHA256SUMS" | grep " $F\$" | shasum -a 256 -c
+chmod +x "$F" && mv "$F" ~/bin/gitpull   # any folder on your PATH
+```
+
+From a clone of this repository, `make build` writes the binary to `tmp/bin/gitpull`. `gitpull version` prints the
 version you have.
 
 ## Getting started
 
-1. **Create a GitHub token** that can read the organization's repositories: a classic token with the `repo` scope, or
-   a fine-grained token with read access to *Contents* and *Metadata*. If the organization uses SSO, authorize the
-   token for it in your GitHub token settings.
+1. **Create a GitHub token** that can read the organization's repositories, and those their submodules point to: a
+   classic token with the `repo` scope, or a fine-grained token with read access to *Contents* and *Metadata*. If the
+   organization uses SSO, authorize the token for it in your GitHub token settings.
 
 2. **Store it in a credentials file**, in the format `git config credential.helper store` uses:
 
@@ -197,6 +213,10 @@ Every command takes `-config <file>`, a JSON file whose keys are named after the
 
 `list` uses `-token` if it is given, and otherwise the token from the credentials file.
 
+Submodules on `github.com` are cloned with the same credentials, over HTTPS even when `.gitmodules` gives an SSH
+address. Submodules on any other host never get them: they are cloned without credentials, or over SSH with your SSH
+agent and `known_hosts`, and left out with a warning when that fails.
+
 The credentials file is the one `git config credential.helper store` writes: one URL per line, such as
 `https://user:token@github.com`. gitpull uses the first `https` line for `github.com` that has both a user and a
 token, ignores lines for other hosts and lines it can't parse, and decodes percent-encoded characters (`%40` for
@@ -210,10 +230,10 @@ processes while gitpull runs.
 gitpull logs to stderr, one JSON object per line, so the output of `list` on stdout stays clean:
 
 ```json
-{"time":"2026-10-27T01:59:49.628+01:00","level":"INFO","source":{"function":"github.com/zalgonoise/gitpull/git.clone","file":".../git/git.go","line":87},"msg":"cloned remote","uri":"https://github.com/acme/api.git","branch":"main","commit":"7b22e41dc674a3c24f644f86050317360a923fe1"}
+{"time":"2026-10-27T01:59:49.628+01:00","level":"INFO","source":{"function":"github.com/zalgonoise/gitpull/git.clone","file":".../git/git.go","line":101},"msg":"cloned remote","uri":"https://github.com/acme/api.git","branch":"main","commit":"7b22e41dc674a3c24f644f86050317360a923fe1"}
 ```
 
-Each repository logs one of these messages, with its `uri`:
+Each repository logs some of these messages, with its `uri` (for a submodule, the repository that holds it):
 
 | Level | Message | When |
 |---|---|---|
@@ -224,6 +244,9 @@ Each repository logs one of these messages, with its `uri`:
 | INFO | `pulled from remote` | `pull` brought new commits (with `branch` and `commit`) |
 | INFO | `repository already up-to-date` | `pull` found nothing new |
 | INFO | `repository not cloned yet` | `pull` found no repository in the folder and clones it (with `path`) |
+| WARN | `submodule not cloned` | A submodule failed and was left out (with `submodule`, `url` and `error`) |
+| WARN | `some tags were not stored` | Tags whose names differ only by case collided; the others were stored |
+| WARN | `tags not fetched` | The tags failed after the clone (with `error`); the repository is kept |
 | ERROR | `repository failed` | The repository failed (with `error`); the others go on |
 
 A run with failures ends with `ERROR` lines holding the summary, such as `1 of 2 repositories failed`. When the
@@ -267,11 +290,16 @@ gitpull pull -config acme.json 2>&1 | jq -c 'select(.msg == "repository failed")
 
 ## Limitations
 
-- **GitHub only**, over HTTPS: repository URLs and the API are `github.com`'s, and SSH keys are not used.
+- **GitHub only**, over HTTPS: repository URLs and the API are `github.com`'s. Only submodules hosted elsewhere are
+  cloned from their own address, and left out (with a warning) when that fails.
+- **Folders are named `<name>.git`.** A repository you cloned yourself into `<name>` isn't recognized: rename the
+  folder to `<name>.git`, or `pull` clones the repository again next to it.
 - **`list` works for organizations**, not personal accounts, because it calls `/orgs/{org}/repos`. `clone` and `pull`
   work for both.
 - **`pull` only fast-forwards.** Branches that diverge from `origin`, and folders with uncommitted changes, are
   reported and left for you to sort out with `git`.
+- **`pull` doesn't update submodules.** It fast-forwards the repository itself; run `git submodule update --init
+  --recursive` in it to bring its submodules along.
 - **`pull` follows each clone's own `origin`**: a folder cloned from somewhere else is pulled from there.
 
 ## Layout
