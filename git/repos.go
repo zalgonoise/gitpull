@@ -48,6 +48,16 @@ func formatRepos(org string, repos []string) []string {
 // GitFunc is a git operation on one repository: its URL, the directory it lives in and the credentials to use.
 type GitFunc func(ctx context.Context, uri, path string, auth *Auth, logger *slog.Logger) error
 
+// repoError is one repository's failure: its URL and what went wrong.
+type repoError struct {
+	uri string
+	err error
+}
+
+func (e *repoError) Error() string { return e.uri + ": " + e.err.Error() }
+
+func (e *repoError) Unwrap() error { return e.err }
+
 // failures is the error MultiRepo returns when repositories fail or are skipped: a short summary, with each
 // repository's error, and the reason for skipping, still reachable through errors.Is and errors.As.
 type failures struct {
@@ -117,7 +127,7 @@ func MultiRepo(ctx context.Context, org, baseDir string, repos []string, auth *A
 						slog.String("error", err.Error()))
 
 					mu.Lock()
-					errs = append(errs, fmt.Errorf("%s: %w", repo, err))
+					errs = append(errs, &repoError{uri: repo, err: err})
 					mu.Unlock()
 				}
 			}
@@ -141,9 +151,37 @@ dispatch:
 		result.cause = context.Cause(ctx)
 	}
 
-	if len(result.errs) > 0 || result.skipped > 0 {
-		return result
+	if len(result.errs) == 0 && result.skipped == 0 {
+		return nil
 	}
 
-	return nil
+	result.log(ctx, logger)
+
+	return result
+}
+
+// log ends a run with one summary of what failed: each repository by name with its error, which the "repository
+// failed" lines logged as it happened spread across the whole run.
+func (f *failures) log(ctx context.Context, logger *slog.Logger) {
+	byName := make([]slog.Attr, 0, len(f.errs))
+	for _, err := range f.errs {
+		var re *repoError
+		if errors.As(err, &re) {
+			byName = append(byName, slog.String(strings.TrimSuffix(TopLevelDir(re.uri), ".git"), re.err.Error()))
+		}
+	}
+
+	slices.SortFunc(byName, func(a, b slog.Attr) int { return strings.Compare(a.Key, b.Key) })
+
+	attrs := []any{
+		slog.Int("failed", len(f.errs)),
+		slog.Int("total", f.total),
+		slog.Attr{Key: "errors", Value: slog.GroupValue(byName...)},
+	}
+
+	if f.skipped > 0 {
+		attrs = append(attrs, slog.Int("skipped", f.skipped), slog.String("cause", fmt.Sprint(f.cause)))
+	}
+
+	logger.ErrorContext(ctx, "repositories failed", attrs...)
 }

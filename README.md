@@ -249,8 +249,15 @@ Each repository logs some of these messages, with its `uri` (for a submodule, th
 | WARN | `tags not fetched` | The tags failed after the clone (with `error`); the repository is kept |
 | ERROR | `repository failed` | The repository failed (with `error`); the others go on |
 
-A run with failures ends with `ERROR` lines holding the summary, such as `1 of 2 repositories failed`. When the
-context carries an OpenTelemetry span, each line also gets its `trace_id` and `span_id`.
+A run with failures ends with every failure in one place, then exits with status 1:
+
+```json
+{"time":"…","level":"ERROR","msg":"repositories failed","failed":2,"total":638,"errors":{"api":"worktree contains unstaged changes","web":"authentication required"}}
+```
+
+`errors` maps each failed repository's name to its error; a run interrupted midway also has `skipped` and `cause`
+(`context canceled`). The last line is the count, such as `2 of 638 repositories failed`. When the context carries
+an OpenTelemetry span, each line also gets its `trace_id` and `span_id`.
 
 For a readable summary, filter the logs through `jq`:
 
@@ -282,10 +289,10 @@ gitpull pull -config acme.json
 gitpull pull -config acme.json -repos api,web
 ```
 
-**See only what failed:**
+**See only what failed**, one repository per line:
 
 ```sh
-gitpull pull -config acme.json 2>&1 | jq -c 'select(.msg == "repository failed") | {uri, error}'
+gitpull pull -config acme.json 2>&1 | jq -r 'select(.msg == "repositories failed") | .errors | to_entries[] | "\(.key): \(.value)"'
 ```
 
 ## Limitations

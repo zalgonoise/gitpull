@@ -1,7 +1,9 @@
 package git
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -165,7 +167,8 @@ func TestMultiRepo(t *testing.T) {
 					return nil
 				}
 
-				err := MultiRepo(t.Context(), "acme", "base", repos, nil, testcase.workers, fn, slog.New(slog.DiscardHandler))
+				logs := &bytes.Buffer{}
+				err := MultiRepo(t.Context(), "acme", "base", repos, nil, testcase.workers, fn, slog.New(slog.NewJSONHandler(logs, nil)))
 
 				require.Len(t, seen, len(repos))
 				for uri, count := range seen {
@@ -191,6 +194,14 @@ func TestMultiRepo(t *testing.T) {
 				for _, failing := range testcase.failing {
 					require.Contains(t, messages, failing+": "+errFailed.Error())
 				}
+
+				// The run ends with every failure by repository name.
+				summary := lastRecord(t, logs)
+				require.Equal(t, "repositories failed", summary["msg"])
+				require.Equal(t, float64(len(testcase.failing)), summary["failed"])
+				require.Equal(t, float64(len(repos)), summary["total"])
+				require.Equal(t, map[string]any{"repo-03": "failed", "repo-17": "failed"}, summary["errors"])
+				require.NotContains(t, summary, "skipped")
 			})
 		})
 	}
@@ -234,10 +245,32 @@ func TestMultiRepoStopsWhenContextIsDone(t *testing.T) {
 			return ctx.Err()
 		}
 
-		err := MultiRepo(ctx, "acme", "base", repos, nil, 2, fn, slog.New(slog.DiscardHandler))
+		logs := &bytes.Buffer{}
+		err := MultiRepo(ctx, "acme", "base", repos, nil, 2, fn, slog.New(slog.NewJSONHandler(logs, nil)))
 
 		require.ErrorIs(t, err, context.Canceled)
 		require.EqualError(t, err, fmt.Sprintf("%d of 10 repositories failed, %d skipped: context canceled", len(seen), 10-len(seen)))
 		require.LessOrEqual(t, len(seen), 2)
+
+		summary := lastRecord(t, logs)
+		require.Equal(t, "repositories failed", summary["msg"])
+		require.Equal(t, float64(10-len(seen)), summary["skipped"])
+		require.Equal(t, "context canceled", summary["cause"])
+		require.Len(t, summary["errors"], len(seen))
 	})
+}
+
+// lastRecord decodes the last JSON log record written to logs.
+func lastRecord(t *testing.T, logs *bytes.Buffer) map[string]any {
+	t.Helper()
+
+	var last map[string]any
+
+	decoder := json.NewDecoder(logs)
+	for decoder.More() {
+		last = nil
+		require.NoError(t, decoder.Decode(&last))
+	}
+
+	return last
 }
