@@ -8,6 +8,7 @@ repositories at a time. Written in Go on [go-git](https://github.com/go-git/go-g
 gitpull list  -org acme -i ~/.git-credentials          # what the organization has
 gitpull clone -config acme.json -shallow -parallel 8    # clone it, skipping what is already cloned
 gitpull pull  -config acme.json -parallel 8             # catch up later, cloning what is missing
+gitpull pull  -config acme.json -reset                  # the same, discarding local changes: mirrors of the remotes
 ```
 
 ## What you can use it for
@@ -16,6 +17,9 @@ gitpull pull  -config acme.json -parallel 8             # catch up later, clonin
   API, and `gitpull clone` clones them in parallel, shallow if you only need the latest code.
 - **Keep many clones up to date.** `gitpull pull` fast-forwards every repository from its `origin`, and clones the ones
   you don't have yet. Repositories that are already up to date are not errors.
+- **Keep clones that only mirror their remotes.** For folders nobody works in, such as the input of other tools,
+  `gitpull pull -reset` makes each clone match its remote whatever happened to it: changed files are restored and
+  commits of its own are dropped, with a warning for each.
 - **Keep the repositories you work with in one file.** A JSON config holds the organization, the folder, the
   repositories, the credentials file and the number of workers. Flags override it for a single run. Add repositories
   to it and run `pull`: the new ones are cloned and the others updated.
@@ -37,9 +41,19 @@ gitpull pull  -config acme.json -parallel 8             # catch up later, clonin
     address `.gitmodules` gives, without your credentials, which are only ever sent to `github.com`.
   - On a case-insensitive filesystem (macOS, Windows), two tags whose names differ only by case, such as `v1.0.0` and
     `V1.0.0`, can't be stored side by side: the first is kept and the other left out.
-- **`pull`** opens `<dir>/<name>.git`, fetches from `origin` and fast-forwards the checked-out branch. A repository
-  that isn't there yet is cloned instead, like `clone` would. It never overwrites your work: a branch that has diverged
-  from `origin`, or a folder with uncommitted changes, is reported as an error and left as it is.
+- **`pull`** opens `<dir>/<name>.git`, fetches from `origin`, fast-forwards the checked-out branch and moves the
+  submodules to the commits it now pins them to. A repository that isn't there yet is cloned instead, like `clone`
+  would. It never overwrites your work: a branch that has diverged from `origin`, or changed files in the way of the
+  pull, are reported as an error, and the repository is left exactly as it was.
+- **`pull -reset`** is for clones that should only mirror their remotes. It makes each repository match `origin`:
+  changes to tracked files are discarded, staged or not, also when there is nothing new to pull; commits `origin`
+  doesn't have are dropped; and changes inside a submodule that keep it from its pinned commit are discarded too.
+  Each of these is logged as a warning. Untracked files are kept, as `git reset --hard` keeps them.
+- **Not every difference is a change.** Two kinds of path never look as the repository has them, whatever is checked
+  out, and gitpull doesn't take them for changes: they don't stop a `pull`, and `-reset` doesn't report them.
+  - On a filesystem that ignores case (macOS, Windows), paths that differ only by case, such as `README.md` and
+    `readme.md`, or `Docs/` and `docs/`, are one file or folder.
+  - A submodule entry that `.gitmodules` doesn't describe is checked out as an empty folder.
 - **`-parallel N`** starts N workers that share the list, each repository going to exactly one of them. A failure does
   not stop the others: it is logged as it happens, and the run ends with a summary such as `2 of 120 repositories
   failed` and exit status 1.
@@ -112,7 +126,7 @@ gitpull <command> [flags]
 | Command | What it does |
 |---|---|
 | `clone` | Clone repositories into a folder, skipping the ones already cloned |
-| `pull` | Fast-forward cloned repositories from their `origin`, cloning the missing ones |
+| `pull` | Fast-forward cloned repositories from their `origin`, cloning the missing ones; with `-reset`, discarding local changes |
 | `list` | Print the names of a GitHub organization's repositories |
 | `version` | Print the version |
 | `help` | Print the commands |
@@ -142,8 +156,24 @@ Fast-forwards each repository in `<dir>/<name>.git` from `origin`. A repository 
 cloned instead, so a list that grew since the last `clone` needs no extra step. A folder that holds something other
 than a git repository is still reported as an error and left untouched.
 
-It takes the same flags as `clone`. `-shallow` only decides how the missing repositories are cloned: existing
-clones keep their history as it is, and a shallow clone stays shallow, only fetching the new commits.
+It takes the same flags as `clone`, and one more. `-shallow` only decides how the missing repositories are cloned:
+existing clones keep their history as it is, and a shallow clone stays shallow, only fetching the new commits.
+
+| Flag | Default | Config key | What it does |
+|---|---|---|---|
+| `-reset` | off | `reset` | Make each repository match its remote: discard its changes to tracked files and the commits its remote doesn't have. Untracked files are kept |
+
+Without `-reset`, a repository fails with `worktree contains unstaged changes` when changed files are in the way of
+the pull, or with `non-fast-forward update` when its branch has diverged from `origin`, and is left as it was. With
+it, nothing local stops a pull:
+
+```sh
+gitpull pull -config acme.json -reset
+```
+
+`-reset` deletes work that isn't committed, for good, in every repository of the run: use it for folders nobody works
+in. A commit it drops is named in the warning, and stays in the repository until git's garbage collection:
+`git branch rescued <commit>` brings it back.
 
 ### `list`
 
@@ -179,6 +209,7 @@ Every command takes `-config <file>`, a JSON file whose keys are named after the
   "identity": "~/.git-credentials",
   "parallel": 8,
   "shallow": true,
+  "reset": false,
   "repos": [
     "api",
     "web",
@@ -195,6 +226,7 @@ Every command takes `-config <file>`, a JSON file whose keys are named after the
 | `identity` | string | `-i`, `-identity` |
 | `parallel` | number | `-parallel` |
 | `shallow` | boolean | `-shallow` |
+| `reset` | boolean | `-reset` (`pull` only) |
 
 - **Flags on the command line win** over the file, and the file wins over the defaults. For example,
   `gitpull pull -config acme.json -repos api` pulls only `api`, with everything else from the file.
@@ -230,7 +262,7 @@ processes while gitpull runs.
 gitpull logs to stderr, one JSON object per line, so the output of `list` on stdout stays clean:
 
 ```json
-{"time":"2026-10-27T01:59:49.628+01:00","level":"INFO","source":{"function":"github.com/zalgonoise/gitpull/git.clone","file":".../git/git.go","line":101},"msg":"cloned remote","uri":"https://github.com/acme/api.git","branch":"main","commit":"7b22e41dc674a3c24f644f86050317360a923fe1"}
+{"time":"2026-10-27T01:59:49.628+01:00","level":"INFO","source":{"function":"github.com/zalgonoise/gitpull/git.clone","file":".../git/git.go","line":107},"msg":"cloned remote","uri":"https://github.com/acme/api.git","branch":"main","commit":"7b22e41dc674a3c24f644f86050317360a923fe1"}
 ```
 
 Each repository logs some of these messages, with its `uri` (for a submodule, the repository that holds it):
@@ -245,6 +277,9 @@ Each repository logs some of these messages, with its `uri` (for a submodule, th
 | INFO | `repository already up-to-date` | `pull` found nothing new |
 | INFO | `repository not cloned yet` | `pull` found no repository in the folder and clones it (with `path`) |
 | WARN | `submodule not cloned` | A submodule failed and was left out (with `submodule`, `url` and `error`) |
+| WARN | `submodule not updated` | `pull` couldn't move a submodule to its pinned commit (with `submodule`, `url` and `error`); it is left as it was |
+| WARN | `local changes discarded` | `pull -reset` restored changed files (`files`: how many), dropped the repository's own commits (`commit`: where it was), or discarded changes inside a `submodule` |
+| DEBUG | `files still differ after reset` | `pull -reset` left `files` that a reset can't make match the repository |
 | WARN | `some tags were not stored` | Tags whose names differ only by case collided; the others were stored |
 | WARN | `tags not fetched` | The tags failed after the clone (with `error`); the repository is kept |
 | ERROR | `repository failed` | The repository failed (with `error`); the others go on |
@@ -303,10 +338,12 @@ gitpull pull -config acme.json 2>&1 | jq -r 'select(.msg == "repositories failed
   folder to `<name>.git`, or `pull` clones the repository again next to it.
 - **`list` works for organizations**, not personal accounts, because it calls `/orgs/{org}/repos`. `clone` and `pull`
   work for both.
-- **`pull` only fast-forwards.** Branches that diverge from `origin`, and folders with uncommitted changes, are
-  reported and left for you to sort out with `git`.
-- **`pull` doesn't update submodules.** It fast-forwards the repository itself; run `git submodule update --init
-  --recursive` in it to bring its submodules along.
+- **`pull` only fast-forwards.** Branches that diverge from `origin`, and changed files in the way of a pull, are
+  reported and left for you to sort out with `git`, unless you pass `-reset`, which discards them.
+- **`-reset` doesn't remove untracked files**, nor reset the files inside a submodule that is already at its pinned
+  commit.
+- **Checking for local changes reads every file.** `pull -reset` does it in each repository on every run, which
+  takes seconds in a large one; `-parallel` spreads it.
 - **`pull` follows each clone's own `origin`**: a folder cloned from somewhere else is pulled from there.
 
 ## Layout

@@ -27,7 +27,8 @@ Usage:
 
 Commands:
   clone     clone repositories into a folder, skipping the ones already cloned
-  pull      fast-forward cloned repositories from their origin, cloning the missing ones
+  pull      fast-forward cloned repositories from their origin, cloning the missing ones;
+            with -reset, discarding local changes so each matches its remote
   list      print the names of a GitHub organization's repositories
   version   print the version
   help      print this help
@@ -154,6 +155,7 @@ func ExecPull(ctx context.Context, logger *slog.Logger, args []string) (int, err
 	dir := fs.String("dir", ".", "folder the repositories were cloned into, as <dir>/<name>.git")
 	repos := fs.String("repos", "", "comma-separated repository names")
 	shallow := fs.Bool("shallow", false, "clone missing repositories with only the latest commit of the default branch, without tags")
+	reset := fs.Bool("reset", false, "make each repository match its remote: discard its changes to tracked files and the commits its remote doesn't have; untracked files are kept")
 	parallel := fs.Int("parallel", 1, "number of repositories to pull at the same time")
 	user := fs.String("user", "", "GitHub user, together with -token")
 	token := fs.String("token", "", "GitHub token, together with -user; prefer -i, which keeps it out of your shell history")
@@ -178,10 +180,15 @@ func ExecPull(ctx context.Context, logger *slog.Logger, args []string) (int, err
 		return 1, err
 	}
 
-	pullFn := git.PullOrClone(cloneFunc(*shallow))
+	pullFn := git.PullOrClone(pullFunc(*reset), cloneFunc(*shallow))
 
 	if err := git.MultiRepo(ctx, *org, expandHome(*dir), strings.Split(*repos, ","), auth, *parallel, pullFn, logger); err != nil {
-		logger.ErrorContext(ctx, "failed to pull repositories", slog.String("error", err.Error()))
+		attrs := []any{slog.String("error", err.Error())}
+		if !*reset && git.BlockedByLocalChanges(err) {
+			attrs = append(attrs, slog.String("hint", "pull -reset discards the local changes and commits that stop a pull"))
+		}
+
+		logger.ErrorContext(ctx, "failed to pull repositories", attrs...)
 
 		return 1, err
 	}
@@ -238,6 +245,15 @@ func ExecList(ctx context.Context, logger *slog.Logger, args []string) (int, err
 	}
 
 	return 0, nil
+}
+
+// pullFunc returns the pull that -reset asks for.
+func pullFunc(reset bool) git.GitFunc {
+	if reset {
+		return git.ResetPull
+	}
+
+	return git.Pull
 }
 
 // cloneFunc returns the clone that -shallow asks for.

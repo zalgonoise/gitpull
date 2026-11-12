@@ -23,7 +23,8 @@ func TestLoad(t *testing.T) {
 				"repos": ["api", "web"],
 				"identity": "~/.git-credentials",
 				"parallel": 8,
-				"shallow": true
+				"shallow": true,
+				"reset": true
 			}`,
 			wants: map[string]string{
 				"org":      "acme",
@@ -32,11 +33,12 @@ func TestLoad(t *testing.T) {
 				"identity": "~/.git-credentials",
 				"parallel": "8",
 				"shallow":  "true",
+				"reset":    "true",
 			},
 		},
 		{
 			name:  "UnsetFieldsAreLeftOut",
-			input: `{"org": "acme", "parallel": 0, "shallow": false, "repos": []}`,
+			input: `{"org": "acme", "parallel": 0, "shallow": false, "reset": false, "repos": []}`,
 			wants: map[string]string{"org": "acme"},
 		},
 		{

@@ -17,7 +17,8 @@ const fullConfig = `{
 	"repos": ["api", "web"],
 	"identity": "/config/.git-credentials",
 	"parallel": 8,
-	"shallow": true
+	"shallow": true,
+	"reset": true
 }`
 
 func writeFile(t *testing.T, name, content string) string {
@@ -42,6 +43,14 @@ func newCloneFlags() *flag.FlagSet {
 	fs.String("user", "", "")
 	fs.String("token", "", "")
 	identityFlag(fs)
+
+	return fs
+}
+
+// newPullFlags declares the same flags as ExecPull: those of ExecClone, and -reset.
+func newPullFlags() *flag.FlagSet {
+	fs := newCloneFlags()
+	fs.Bool("reset", false, "")
 
 	return fs
 }
@@ -125,6 +134,42 @@ func TestApplyConfig(t *testing.T) {
 				"parallel": "8",
 				"i":        "/home/.git-credentials",
 				"identity": "/home/.git-credentials",
+				"user":     "",
+				"token":    "",
+			},
+		},
+		{
+			// clone has no -reset: the key only reaches pull.
+			name:   "ResetIsForPull",
+			flags:  newPullFlags,
+			config: fullConfig,
+			wants: map[string]string{
+				"org":      "acme",
+				"dir":      "/src/acme",
+				"repos":    "api,web",
+				"shallow":  "true",
+				"reset":    "true",
+				"parallel": "8",
+				"i":        "/config/.git-credentials",
+				"identity": "/config/.git-credentials",
+				"user":     "",
+				"token":    "",
+			},
+		},
+		{
+			name:   "ResetOffOnTheCommandLineWins",
+			flags:  newPullFlags,
+			args:   []string{"-reset=false"},
+			config: fullConfig,
+			wants: map[string]string{
+				"org":      "acme",
+				"dir":      "/src/acme",
+				"repos":    "api,web",
+				"shallow":  "true",
+				"reset":    "false",
+				"parallel": "8",
+				"i":        "/config/.git-credentials",
+				"identity": "/config/.git-credentials",
 				"user":     "",
 				"token":    "",
 			},

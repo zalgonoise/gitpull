@@ -17,6 +17,7 @@ type Config struct {
 	Identity string   `json:"identity"`
 	Parallel int      `json:"parallel"`
 	Shallow  bool     `json:"shallow"`
+	Reset    bool     `json:"reset"`
 }
 
 // Load reads the configuration file at path. Unknown keys are an error, to catch typos.
@@ -66,6 +67,10 @@ func (c *Config) Flags() map[string]string {
 
 	if c.Shallow {
 		flags["shallow"] = "true"
+	}
+
+	if c.Reset {
+		flags["reset"] = "true"
 	}
 
 	return flags
