@@ -6,7 +6,7 @@ require (
 	github.com/go-git/go-git/v6 v6.0.0-alpha.5
 	github.com/stretchr/testify v1.12.1
 	github.com/zalgonoise/x/cli/v2 v2.0.0-20260729211131-1dcb39d025d1
-	go.opentelemetry.io/otel/trace v1.46.0
+	go.opentelemetry.io/otel/trace v1.47.0
 )
 
 require (
@@ -23,7 +23,7 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/zalgonoise/cfg v1.0.0 // indirect
 	github.com/zalgonoise/x/errs v0.0.0-20231026174448-45b698aba498 // indirect
-	go.opentelemetry.io/otel v1.46.0 // indirect
+	go.opentelemetry.io/otel v1.47.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
